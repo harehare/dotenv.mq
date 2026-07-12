@@ -1,0 +1,176 @@
+include "test"
+| include "dotenv"
+|
+
+def test_parse_simple_key_value():
+  let result = dotenv_parse("KEY=value")
+  | assert_eq(result["KEY"], "value")
+end
+
+def test_parse_multiple_lines():
+  let result = dotenv_parse("A=1\nB=2\nC=3")
+  | assert_eq(result["A"], "1")
+  | assert_eq(result["B"], "2")
+  | assert_eq(result["C"], "3")
+end
+
+def test_parse_empty_value():
+  let result = dotenv_parse("KEY=")
+  | assert_eq(result["KEY"], "")
+end
+
+def test_parse_later_key_overrides_earlier():
+  let result = dotenv_parse("KEY=first\nKEY=second")
+  | assert_eq(result["KEY"], "second")
+end
+
+def test_parse_export_prefix():
+  let result = dotenv_parse("export KEY=value")
+  | assert_eq(result["KEY"], "value")
+end
+
+def test_parse_export_prefix_multiple():
+  let result = dotenv_parse("export A=1\nexport B=2")
+  | assert_eq(result["A"], "1")
+  | assert_eq(result["B"], "2")
+end
+
+def test_parse_skips_blank_lines():
+  let result = dotenv_parse("A=1\n\n\nB=2")
+  | assert_eq(result["A"], "1")
+  | assert_eq(result["B"], "2")
+end
+
+def test_parse_skips_full_line_comment():
+  let result = dotenv_parse("# a comment\nKEY=value")
+  | assert_eq(result["KEY"], "value")
+end
+
+def test_parse_leading_comment_only_value():
+  let result = dotenv_parse("KEY=#comment")
+  | assert_eq(result["KEY"], "")
+end
+
+def test_parse_inline_comment_after_unquoted_value():
+  let result = dotenv_parse("KEY=value # trailing comment")
+  | assert_eq(result["KEY"], "value")
+end
+
+def test_parse_hash_without_leading_space_is_kept():
+  let result = dotenv_parse("URL=http://example.invalid/path#fragment")
+  | assert_eq(result["URL"], "http://example.invalid/path#fragment")
+end
+
+def test_parse_double_quoted_value():
+  let result = dotenv_parse("KEY=\"hello world\"")
+  | assert_eq(result["KEY"], "hello world")
+end
+
+def test_parse_double_quoted_escape_n():
+  let result = dotenv_parse("KEY=\"line1\\nline2\"")
+  | assert_eq(result["KEY"], "line1\nline2")
+end
+
+def test_parse_double_quoted_escape_quote():
+  let result = dotenv_parse("KEY=\"say \\\"hi\\\"\"")
+  | assert_eq(result["KEY"], "say \"hi\"")
+end
+
+def test_parse_double_quoted_preserves_hash():
+  let result = dotenv_parse("KEY=\"has # inside\"")
+  | assert_eq(result["KEY"], "has # inside")
+end
+
+def test_parse_single_quoted_is_literal():
+  let result = dotenv_parse("KEY='raw\\nvalue'")
+  | assert_eq(result["KEY"], "raw\\nvalue")
+end
+
+def test_parse_single_quoted_preserves_hash():
+  let result = dotenv_parse("KEY='has # inside'")
+  | assert_eq(result["KEY"], "has # inside")
+end
+
+def test_parse_value_with_surrounding_whitespace_trimmed():
+  let result = dotenv_parse("KEY =   value  ")
+  | assert_eq(result["KEY"], "value")
+end
+
+def test_parse_key_with_underscore_and_digits():
+  let result = dotenv_parse("MY_KEY_2=value")
+  | assert_eq(result["MY_KEY_2"], "value")
+end
+
+def test_parse_key_with_dot():
+  let result = dotenv_parse("APP.NAME=value")
+  | assert_eq(result["APP.NAME"], "value")
+end
+
+def test_parse_missing_equals_errors():
+  let result = try: dotenv_parse("NOVALUE") catch: "parse_error"
+  | assert_eq(result, "parse_error")
+end
+
+def test_parse_line_simple():
+  let result = dotenv_parse_line("KEY=value")
+  | assert_eq(result[0], "KEY")
+  | assert_eq(result[1], "value")
+end
+
+def test_parse_line_export():
+  let result = dotenv_parse_line("export KEY=value")
+  | assert_eq(result[0], "KEY")
+  | assert_eq(result[1], "value")
+end
+
+def test_parse_line_quoted():
+  let result = dotenv_parse_line("KEY=\"hello world\"")
+  | assert_eq(result[1], "hello world")
+end
+
+def test_stringify_simple():
+  let result = dotenv_stringify({"KEY": "value"})
+  | assert_eq(result, "KEY=value")
+end
+
+def test_stringify_quotes_value_with_space():
+  let result = dotenv_stringify({"KEY": "hello world"})
+  | assert_eq(result, "KEY=\"hello world\"")
+end
+
+def test_stringify_quotes_empty_value():
+  let result = dotenv_stringify({"KEY": ""})
+  | assert_eq(result, "KEY=\"\"")
+end
+
+def test_stringify_escapes_newline():
+  let result = dotenv_stringify({"KEY": "line1\nline2"})
+  | assert_eq(result, "KEY=\"line1\\nline2\"")
+end
+
+def test_stringify_multiple_entries():
+  let result = dotenv_stringify({"A": "1", "B": "2"})
+  | assert_eq(result, "A=1\nB=2")
+end
+
+def test_stringify_quotes_hash():
+  let result = dotenv_stringify({"KEY": "has # hash"})
+  | assert_eq(result, "KEY=\"has # hash\"")
+end
+
+def test_roundtrip_parse_stringify_parse():
+  let input = "export APP_NAME=myapp\nPORT=8080\nDB_URL=\"postgres://user:pass@localhost/db\"\nGREETING=\"line1\\nline2\"\nURL=http://example.invalid/path#fragment\n"
+  | let parsed = dotenv_parse(input)
+  | let reparsed = dotenv_parse(dotenv_stringify(parsed))
+  | assert_eq(parsed, reparsed)
+end
+
+def test_parse_realistic_env_file():
+  let input = "# app config\nexport APP_NAME=myapp\nPORT=8080\nDEBUG=false\n\nDB_URL=\"postgres://user:pass@localhost/db?sslmode=disable\"\nINLINE=foo # trailing comment\n"
+  | let result = dotenv_parse(input)
+  | assert_eq(result["APP_NAME"], "myapp")
+  | assert_eq(result["PORT"], "8080")
+  | assert_eq(result["DEBUG"], "false")
+  | assert_eq(result["DB_URL"], "postgres://user:pass@localhost/db?sslmode=disable")
+  | assert_eq(result["INLINE"], "foo")
+end

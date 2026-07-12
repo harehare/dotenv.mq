@@ -1,0 +1,193 @@
+# dotenv (.env) parser and serializer implemented in mq
+# https://github.com/motdotla/dotenv#rules
+
+def _de_ws_len(sub): len(first(regex_match(sub, "^[ \\t]*")));
+
+# Strips an inline `#` comment from an unquoted value. A `#` only starts a
+# comment when it is the first character or immediately preceded by
+# whitespace, so values like `URL=http://example.com/#frag` are preserved.
+def _de_strip_comment(raw):
+  var out = ""
+  | var i = 0
+  | let n = len(raw)
+  | var stopped = false
+  | let _ = while (i < n && !stopped):
+      let c = raw[i]
+      | if (c == "#" && (i == 0 || raw[i - 1] == " " || raw[i - 1] == "\t")):
+          stopped = true
+        else:
+          do out = out + c | i += 1 | out end
+    end
+  | out
+end
+
+def _de_unescape_dq(s):
+  var result = ""
+  | var i = 0
+  | let n = len(s)
+  | let _ = while (i < n):
+      if (s[i] != "\\" || i + 1 >= n):
+        do result = result + s[i] | i += 1 | result end
+      elif (s[i + 1] == "n"):
+        do result = result + "\n" | i += 2 | result end
+      elif (s[i + 1] == "t"):
+        do result = result + "\t" | i += 2 | result end
+      elif (s[i + 1] == "r"):
+        do result = result + "\r" | i += 2 | result end
+      elif (s[i + 1] == "\""):
+        do result = result + "\"" | i += 2 | result end
+      elif (s[i + 1] == "\\"):
+        do result = result + "\\" | i += 2 | result end
+      else:
+        do result = result + s[i + 1] | i += 2 | result end
+    end
+  | result
+end
+
+# Parses a double-quoted value starting just after the opening `"`.
+# Returns `[next_pos, value]`.
+def _de_parse_double_quoted(s, pos):
+  var i = pos
+  | let n = len(s)
+  | var buf = ""
+  | var done = false
+  | let _ = while (i < n && !done):
+      if (s[i] == "\""):
+        do done = true | buf end
+      elif (s[i] == "\\" && i + 1 < n):
+        do buf = buf + s[i] + s[i + 1] | i += 2 | buf end
+      else:
+        do buf = buf + s[i] | i += 1 | buf end
+    end
+  | if (!done): error("dotenv: unterminated double-quoted value")
+  | let close = i + 1
+  | [close, _de_unescape_dq(buf)]
+end
+
+# Parses a single-quoted value (no escape processing) starting just after the
+# opening `'`. Returns `[next_pos, value]`.
+def _de_parse_single_quoted(s, pos):
+  var i = pos
+  | let n = len(s)
+  | var buf = ""
+  | var done = false
+  | let _ = while (i < n && !done):
+      if (s[i] == "'"):
+        do done = true | buf end
+      else:
+        do buf = buf + s[i] | i += 1 | buf end
+    end
+  | if (!done): error("dotenv: unterminated single-quoted value")
+  | let close = i + 1
+  | [close, buf]
+end
+
+# Skips to (but not past) the next newline, returning the new position.
+def _de_skip_to_eol(s, pos):
+  var i = pos
+  | let n = len(s)
+  | let _ = while (i < n && s[i] != "\n"): i += 1 end
+  | i
+end
+
+# Parses a single `KEY=VALUE` line (an optional leading `export ` is allowed).
+# Returns `[key, value]`.
+def dotenv_parse_line(input):
+  let s = trim(to_string(input))
+  | let s2 = if (starts_with(s, "export ")): trim(slice(s, 7, len(s))) else: s
+  | let eq_idx = index(s2, "=")
+  | if (eq_idx == -1): error("dotenv: expected '=' after key")
+  | let key = trim(slice(s2, 0, eq_idx))
+  | let rest = trim(slice(s2, eq_idx + 1, len(s2)))
+  | let value = if (starts_with(rest, "\"") && ends_with(rest, "\"") && len(rest) >= 2):
+      _de_unescape_dq(slice(rest, 1, len(rest) - 1))
+    elif (starts_with(rest, "'") && ends_with(rest, "'") && len(rest) >= 2):
+      slice(rest, 1, len(rest) - 1)
+    else:
+      trim(_de_strip_comment(rest))
+  | [key, value]
+end
+
+# Parses the full contents of a `.env` file into a dict.
+#
+# Supports:
+# - `KEY=value`, `KEY="value"`, `KEY='value'`
+# - an optional leading `export ` per line
+# - blank lines and full-line `#` comments
+# - inline `# comment` after unquoted values
+# - `\n`/`\t`/`\r`/`\"`/`\\` escapes and literal embedded newlines inside
+#   double-quoted values
+# - single-quoted values are taken literally (no escape processing)
+#
+# Later definitions of the same key overwrite earlier ones.
+def dotenv_parse(input):
+  let s = replace(to_string(input), "\r\n", "\n")
+  | let n = len(s)
+  | var i = 0
+  | var result = dict()
+  | let _ = while (i < n):
+      let ws = _de_ws_len(slice(s, i, n))
+      | i += ws
+      | if (i >= n):
+          result
+        elif (s[i] == "\n"):
+          do i += 1 | result end
+        elif (s[i] == "#"):
+          do i = _de_skip_to_eol(s, i) | result end
+        else:
+          do
+            let with_export = if (slice(s, i, min(i + 7, n)) == "export "): i + 7 else: i
+            | let key_m = first(regex_match(slice(s, with_export, n), "^[A-Za-z_][A-Za-z0-9_.]*"))
+            | if (is_none(key_m) || key_m == ""):
+                error("dotenv: expected a key")
+            | let after_key = with_export + len(key_m)
+            | let ws2 = _de_ws_len(slice(s, after_key, n))
+            | let eq_pos = after_key + ws2
+            | if (eq_pos >= n || s[eq_pos] != "="):
+                error("dotenv: expected '=' after key '" + key_m + "'")
+            | let val_start = eq_pos + 1 + _de_ws_len(slice(s, eq_pos + 1, n))
+            | let parsed = if (val_start < n && s[val_start] == "\""):
+                _de_parse_double_quoted(s, val_start + 1)
+              elif (val_start < n && s[val_start] == "'"):
+                _de_parse_single_quoted(s, val_start + 1)
+              else:
+                do
+                  let eol = _de_skip_to_eol(s, val_start)
+                  | [eol, trim(_de_strip_comment(slice(s, val_start, eol)))]
+                end
+            | i = _de_skip_to_eol(s, parsed[0])
+            | result = set(result, key_m, parsed[1])
+            | result
+          end
+    end
+  | result
+end
+
+def _de_escape_value(v):
+  let s = to_string(v)
+  | replace(replace(replace(replace(replace(s, "\\", "\\\\"), "\"", "\\\""), "\n", "\\n"), "\t", "\\t"), "\r", "\\r")
+end
+
+def _de_needs_quote(v):
+  let s = to_string(v)
+  | s == ""
+    || contains(s, " ")
+    || contains(s, "\t")
+    || contains(s, "\n")
+    || contains(s, "\r")
+    || contains(s, "\"")
+    || contains(s, "\\")
+    || contains(s, "#")
+end
+
+def _de_stringify_pair(k, v):
+  if (_de_needs_quote(v)):
+    k + "=\"" + _de_escape_value(v) + "\""
+  else:
+    k + "=" + to_string(v)
+end
+
+# Stringifies a dict into `.env` format, one `KEY=VALUE` line per entry.
+def dotenv_stringify(d):
+  join(map(entries(d), fn(kv): _de_stringify_pair(kv[0], kv[1]);), "\n")
+end
