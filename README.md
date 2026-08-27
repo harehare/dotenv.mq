@@ -24,7 +24,7 @@ cp dotenv.mq ~/.local/mq/config/
 ### HTTP Import
 
 ```sh
-mq -I raw 'import "github.com/harehare/dotenv.mq" | dotenv::dotenv_parse(.)' .env
+mq --allow-http-import -I raw 'import "github.com/harehare/dotenv.mq" | dotenv::dotenv_parse(.)' .env
 ```
 
 ## API
